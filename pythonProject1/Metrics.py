@@ -37,6 +37,8 @@ class metrics:
 
     def max_drawdown(self):
         profits = self.profits
+        # cumulative PnL
+        profits = [(profits[i] + profits[i-1]) for i in range(1, len(profits))]
         increments = [(profits[i] - profits[i - 1]) for i in range(1, len(profits))]
         dd = 0
         max_dd = 0
@@ -72,6 +74,7 @@ def PNL(trades):
 def draw_downs(profits):
     dd = 0
     max_dd = 0
+    profits = [(profits[i] + profits[i-1]) for i in range(1, len(profits))]
     increments = [(profits[i] - profits[i-1]) for i in range(1, len(profits))]
     dds = []
     dd_falls = 0

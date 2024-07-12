@@ -12,24 +12,52 @@ def make_connection_to_db(host=host, port=port, user=user, dbname=dbname):
     return cursor, conn
 
 
-def fetch_options_data(cursor, symbol, strike_price, date, month, year, type):
+def fetch_options_data_with_expiry(cursor, symbol, date, month, year):
     cursor.execute(
         f'''
             SELECT *
             FROM ohlcv_options_per_minute oopm
             WHERE symbol = '{symbol}'
-            AND strike = {strike_price}
             AND extract(year from oopm.expiry) = {year}
             AND extract(month from oopm.expiry) = {month}
             AND extract(day from oopm.expiry) = {date}
-            AND opt_type = '{type}';
+            AND oopm.expiry_type = 'I';
         '''
     )
     rows = cursor.fetchall()
     df = pd.DataFrame(rows, columns=[desc[0] for desc in cursor.description])
     return df
 
+# def fetch_options_data_with_expiry(cursor, symbol, strike_price, type, expiry):
+#     cursor.execute(
+#         f'''
+#                 SELECT *
+#                 FROM ohlcv_options_per_minute oopm
+#                 WHERE symbol = '{symbol}'
+#                 AND strike = {strike_price}
+#                 AND expiry = '{expiry}'
+#                 AND opt_type = '{type}';
+#             '''
+#     )
+#     rows = cursor.fetchall()
+#     df = pd.DataFrame(rows, columns=[desc[0] for desc in cursor.description])
+#     return df
 
+def fetch_futures_data_with_expiry(cursor, symbol, date, month, year):
+    query = f'''
+            SELECT *
+            FROM ohlcv_future_per_minute ofpm
+            WHERE ofpm.symbol = '{symbol}'
+            AND ofpm.expiry_type = 'I'
+            AND extract(year from ofpm.expiry) = {year}
+            AND extract(month from ofpm.expiry) = {month}
+            AND extract(day from ofpm.expiry) = {date}
+            ORDER BY date_timestamp ASC;
+        '''
+    cursor.execute(query)
+    rows = cursor.fetchall()
+    df = pd.DataFrame(rows, columns=[desc[0] for desc in cursor.description])
+    return df
 def fetch_options_data_with_closest_expiry_before(cursor, symbol, expiry):
     cursor.execute(
         f'''
@@ -53,7 +81,7 @@ def fetch_options_data_with_closest_expiry_before(cursor, symbol, expiry):
     return df
 
 
-def fetch_futures_data_from_db_ith_expiry(cursor, symbol, x=0):
+def fetch_futures_data_with_ith_expiry(cursor, symbol, x=0):
     query = f'''
         SELECT *
         FROM ohlcv_future_per_minute ofpm
@@ -91,12 +119,22 @@ def fetch_equity_data_in_interval(cursor, symbol, begin, expiry):
     return df
 
 
-def fetch(host, port, user, dbname, symbol, x=15):
+def fetch_with_ith_expiry(host, port, user, dbname, symbol, x=15):
     cursor, conn = make_connection_to_db(host, port, user, dbname)
     # hardcoded for near month expiry
-    df_futures = fetch_futures_data_from_db_ith_expiry(cursor, symbol, x)  # date is the expiry
+    df_futures = fetch_futures_data_with_ith_expiry(cursor, symbol, x)  # date is the expiry
     expiry = df_futures['expiry'].iloc[0]
     df_options = fetch_options_data_with_closest_expiry_before(cursor, symbol, expiry)
+    cursor.close()
+    conn.close()
+    return df_futures, df_options
+
+def fetch_with_expiry(host, port, user, dbname, symbol, date, month, year):
+    cursor, conn = make_connection_to_db(host, port, user, dbname)
+    # hardcoded for near month expiry
+    df_futures = fetch_futures_data_with_expiry(cursor, symbol, date, month, year)  # date is the expiry
+    expiry = df_futures['expiry'].iloc[0]
+    df_options = fetch_options_data_with_expiry(cursor, symbol, date, month, year)
     cursor.close()
     conn.close()
     return df_futures, df_options

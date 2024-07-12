@@ -5,7 +5,7 @@
 # OBTAIN THE METRICS OBJECT USING THE METRICS CLASS DEFINED IN THE METRICS MODULE
 # PLOT AND VISUALISE THE METRICS, AND THE DATA
 
-from Data import fetch
+from Data import fetch_with_expiry, fetch_with_ith_expiry
 from Signal_Logics import EMA
 from Trades import make_trades
 import pandas as pd
@@ -19,18 +19,44 @@ user = "amt"
 dbname = "qdap_test"
 
 symbol = input("Enter symbol of the option you wanna trade on. Make sure the futures and options symbol are the same in the database: ")
-x = int(input("Enter an index of the array of all the expiries available on I type of futures and options you wanna analyse: "))
 fund_locked = int(input("Enter amount of fund you wanna block to your strategy (1 month) (in Rs): "))
 fund_locked *= 100
-
-DF_FUTURES, DF_OPTIONS = fetch(host, port, user, dbname, symbol, x)
+expiry_input_format = input("do you know a valid expiry that exists in the database? (yes/no): ")
+if expiry_input_format == "YES" or expiry_input_format == "yes":
+    print("Enter expiry")
+    date = int(input("Expiration Date: "))
+    month = int(input("Expiration Month: "))
+    year = int(input("Expiration Year: "))
+    DF_FUTURES, DF_OPTIONS = fetch_with_expiry(host, port, user, dbname, symbol, date, month, year)
+else:
+    x = int(input("Enter an index of the array of all the expiries available on I type of futures and options you wanna analyse: "))
+    DF_FUTURES, DF_OPTIONS = fetch_with_ith_expiry(host, port, user, dbname, symbol, x)
 
 df_futures = DF_FUTURES.copy()
 df_options = DF_OPTIONS.copy()
 
+
+print("=======================================================================================================")
+print("                          Printing RAW-FETCHED FUTURES DATA")
+print("=======================================================================================================")
+print("df_futures.shape:", df_futures.shape)
+print(df_futures)
+print('\n\n\n\n\n\n\n\n')
+print("=======================================================================================================")
+print("                          Printing RAW-FETCHED OPTIONS DATA")
+print("=======================================================================================================")
+print("df_options.shape:", df_options.shape)
+print(df_options)
+
+# =============================================================== DATA PREPOCESSING ================================================================= #
+# =============================================================== DATA PREPOCESSING ================================================================= #
+# =============================================================== DATA PREPOCESSING ================================================================= #
+
 df_futures = df_futures.drop_duplicates(subset='date_timestamp', keep='first')
+df_options = df_options.drop_duplicates(subset=['date_timestamp', 'strike'], keep='first')
 df_futures.set_index('date_timestamp', inplace=True)
 df_options.set_index('date_timestamp', inplace=True)
+
 
 
 # NOTE THAT OPTIONS AND FUTURES EXPIRY IN THE QDAP DATABASE ARE NOT FOLLOWING THE SAME FORMAT.
@@ -62,14 +88,33 @@ df_futures = df_futures[range_futures]
 df_options = df_options[range_options]
 # df_futures = df_futures[range_futures]
 # df_options = df_options[range_options]
-print("======================= OVERLAPPING DETAILS OF EXPIRIES =====================")
+print("======================= (END) OVERLAPPING DETAILS OF EXPIRIES (END) =====================")
+
 
 df_calls = df_options[(df_options['opt_type'] == 'CE')]
 df_puts  = df_options[(df_options['opt_type'] == 'PE')]
-
 df_calls_ram = df_calls.pivot(columns='strike', values='close').ffill()
 df_puts_ram = df_puts.pivot(columns='strike', values='close').ffill()
+market_holidays = [
+    (1, 26), (3, 8), (3, 29), (4, 19), (5, 1),
+    (8, 15), (10, 2), (10, 24), (11, 12), (12, 25)
+]
+trading_days = pd.date_range(start=start_intersection, end=end_intersection, freq='B')
+trading_days = trading_days[~trading_days.to_series().apply(lambda x: (x.month, x.day) in market_holidays)]
+trading_minutes = pd.date_range(start='09:15:00', end='15:29:00', freq='T').time
+complete_index = pd.DatetimeIndex([pd.Timestamp.combine(day, time) for day in trading_days for time in trading_minutes])
+df_futures = df_futures.reindex(complete_index).ffill()
+df_calls_ram = df_calls_ram.reindex(complete_index).ffill()
+df_puts_ram = df_puts_ram.reindex(complete_index).ffill()
 df = [df_puts_ram, df_calls_ram]
+
+
+# =============================================================== DATA PREPOCESSING ================================================================= #
+# =============================================================== DATA PREPOCESSING ================================================================= #
+# =============================================================== DATA PREPOCESSING ================================================================= #
+
+
+
 
 window_short = 9
 window_long = 26
