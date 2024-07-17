@@ -11,3 +11,7 @@ def EMA(window_short, window_long, df):
             signals.append((int(position_polarity_positive), df.index[i], df.index[i+1]))
             # bullish -> (1, signal_time, valid_trade_time), bearish -> (0, signal_time, valid_trade_time)
     return signals
+
+def print_signals(signals):
+    for signal in signals:
+        print(f"{["BULLISH", "BEARISH"][signal[0]]} Signal at {signal[1]}. Valid tradable timestamp for this signal: {signal[2]}")
