@@ -1,44 +1,69 @@
 import pandas as pd
+from datetime import time
 
 
 class metrics:
-    def __init__(self, trades, profits, fund_locked, risk_free_rate=12):
+    def __init__(self, df_trades, df_call_put_open, df_call_put_close, fund_locked, risk_free_rate=12,
+                 transaction_costs=11.5, slippage=10):
         self.fund_locked = fund_locked
         self.risk_free_rate = risk_free_rate
-        self.trades = trades
-        self.profits = pd.Series(profits)
+        self.df_trades = df_trades
+        self.df_call_put_close = df_call_put_close
+        self.df_call_put_open = df_call_put_open
+        self.transaction_costs = transaction_costs
+        self.slippage = slippage
+
+    def get_expense_cost(self, amount):
+        transaction_costs = self.transaction_costs
+        slippage = self.slippage
+        return amount * (transaction_costs + slippage) * 1 / 100 * 1 / 100
 
     def number_of_trades(self):
-        return self.trades.count().iloc[0]
+        return self.df_trades.count().iloc[0]
 
-    def net_profit(self):
-        profits = self.profits
-        return profits.sum()
+    def PNL(self):
+        df_trades = self.df_trades
+        profit, net_profit, expenses = 0, 0, 0
+        profits = []
+        open_position = False
+        for i, trade in df_trades.iterrows():
+            price = trade['Price']
+            position = trade['Position']
+            cash_flow_nature = 1
+            if position:  # long -> pos = 1, short -> pos = 0
+                cash_flow_nature = -1
+            net_profit += cash_flow_nature * price
+            profit += cash_flow_nature * price
+            expenses += self.get_expense_cost(price)
+            if open_position and not position:
+                profits.append(profit - expenses)
+                profit, expenses = 0, 0
+            open_position = position
+        return net_profit, profits
 
     def net_turnover(self):
-        prices = self.trades['Price']
+        prices = self.df_trades['Price']
         return prices.sum()
 
-    def net_expenditure(self, transaction_costs=11.5, slippage=10):
+    def net_expenditure(self):
         # 1% = 100 basis points => total_turnover * 0.01/100 * total_basis_points
-        expenses = self.net_turnover() * (0.01 / 100) * (transaction_costs + slippage)
-        return expenses
+        turnover = self.net_turnover()
+        return self.get_expense_cost(turnover)
 
     def net_return(self):
-        return 100 * self.net_profit() / self.fund_locked
+        net_profit, _ = self.PNL()
+        return 100 * net_profit / self.fund_locked
 
     def sharpe(self):
-        std_profits = self.profits.std()
-        std_returns = std_profits / self.fund_locked
-        sharpe_ratio = self.net_return() - (self.risk_free_rate / 12)
-        sharpe_ratio /= 100
-        sharpe_ratio /= std_returns
+        profits_per_day = self.per_day_pnl()
+        profits_per_day = pd.Series(profits_per_day['pnl'])
+        sharpe_ratio = profits_per_day.mean()
+        sharpe_ratio -= self.fund_locked * self.risk_free_rate * 1 / 100 * 1 / 365
+        sharpe_ratio /= profits_per_day.std()
         return sharpe_ratio
 
     def max_drawdown(self):
-        profits = self.profits
-        # cumulative PnL
-        profits = [(profits[i] + profits[i-1]) for i in range(1, len(profits))]
+        _, profits = self.PNL()
         increments = [(profits[i] - profits[i - 1]) for i in range(1, len(profits))]
         dd = 0
         max_dd = 0
@@ -48,28 +73,89 @@ class metrics:
             max_dd = min(dd, max_dd)
         return max_dd
 
-def get_metrics_object(trades, profits, fund_locked, risk_free_rate=12):
-    Metrics = metrics(trades, profits, fund_locked, risk_free_rate)
+    def per_day_pnl(self):
+        df_trades = self.df_trades
+        df_call_put_close = self.df_call_put_close
+        df_call_put_open = self.df_call_put_open
+        trades_timestamps = df_trades.index.normalize().unique()
+        pnl_per_day = []
+        carry_over = False
+        expense = 0
+        for date in trades_timestamps:
+            pnl_this_day = 0
+            df_trades_this_day = df_trades[df_trades.index.normalize() == date]
+            if carry_over:
+                call_put = df_trades_this_day["Call/Put"].iloc[0]
+                strike = df_trades_this_day["strike_price"].iloc[0]
+                pnl_this_day = df_trades_this_day["Price"].iloc[0] - df_call_put_open[call_put][strike].loc[
+                    pd.Timestamp.combine(date, time(9, 15))]
+                df_trades_this_day = df_trades_this_day.iloc[1:]
+                carry_over = False
+            df_prices = df_trades_this_day['Price']
+            df_cashflow_nature = 1 * df_trades_this_day['Position'] + (-1) * (1 - df_trades_this_day['Position'])
+            df_profits = df_prices * df_cashflow_nature
+            df_expenses = self.get_expense_cost(df_prices)
+            pnl_this_day += df_profits.sum() - df_expenses.sum()
+            if df_trades_this_day['Position'].iloc[-1] == 1:
+                call_put = df_trades_this_day['Call/Put'].iloc[-1]
+                strike = df_trades_this_day['strike_price'].iloc[-1]
+                date_timestamp = pd.Timestamp.combine(date, time(15, 29))
+                pnl_this_day -= df_call_put_close[call_put][strike].loc[date_timestamp]
+                carry_over = True
+            pnl_per_day.append((date, pnl_this_day))
+        pnl_per_day = pd.DataFrame(pnl_per_day, columns=['date', 'pnl'])
+        pnl_per_day.set_index('date', inplace=True)
+        return pnl_per_day
+
+# def per_day_pnl(df_trades, df_call_put_close, df_call_put_open):
+#     trades_timestamps = df_trades.index.normalize().unique()
+#     pnl_per_day = []
+#     carry_over = False
+#     carry_date = None
+#     for date in trades_timestamps:
+#         pnl_this_day = 0
+#         df_trades_this_day = df_trades[df_trades.index.normalize() == date]
+#         if carry_over:
+#             call_put = df_trades_this_day["Call/Put"].iloc[0]
+#             strike = df_trades_this_day["strike_price"].iloc[0]
+#             pnl_this_day = df_trades_this_day["Price"].iloc[0] - df_call_put_open[call_put][strike].loc[carry_date]
+#             df_trades_this_day = df_trades_this_day.iloc[1:]
+#             carry_over = False
+#         df_prices = df_trades_this_day['Price']
+#         df_cashflow_nature = 1 * df_trades_this_day['Position'] + (-1) * (1 - df_trades_this_day['Position'])
+#         df_profits = df_prices * df_cashflow_nature
+#         pnl_this_day += df_profits.sum()
+#         if df_trades_this_day['Position'].iloc[-1] == 1:
+#             call_put = df_trades_this_day['Call/Put'].iloc[-1]
+#             strike = df_trades_this_day['strike_price'].iloc[-1]
+#             date_timestamp = pd.Timestamp.combine(date, time(15, 29))
+#             pnl_this_day -= df_call_put_close[call_put][strike].loc[date_timestamp]
+#             carry_over = True
+#             carry_date = pd.Timestamp.combine(date, time(9, 15))
+#         pnl_per_day.append(pnl_this_day)
+#     return pnl_per_day
+def get_metrics_object(trades, df_calls_puts_open, df_calls_puts_close, fund_locked, risk_free_rate=12, transaction_costs = 11.5, slippage = 10):
+    Metrics = metrics(trades, df_calls_puts_open, df_calls_puts_close, fund_locked, risk_free_rate, transaction_costs, slippage)
     return Metrics
 
-def PNL(trades):
-    net_profit = 0
-    profit = 0
-    profits = []
-    open_position = False
-    for i, trade in enumerate(trades):
-        price = trade[0]
-        position = trade[2]
-        cash_flow_nature = 1
-        if position: # long -> pos = 1, short -> pos = 0
-            cash_flow_nature = -1
-        net_profit += cash_flow_nature * price
-        profit += cash_flow_nature * price
-        if open_position and ~position:
-            profits.append(profit)
-            profit = 0
-        open_position = position
-    return net_profit, profits
+# def PNL(trades):
+#     net_profit = 0
+#     profit = 0
+#     profits = []
+#     open_position = False
+#     for i, trade in enumerate(trades):
+#         price = trade[0]
+#         position = trade[2]
+#         cash_flow_nature = 1
+#         if position: # long -> pos = 1, short -> pos = 0
+#             cash_flow_nature = -1
+#         net_profit += cash_flow_nature * price
+#         profit += cash_flow_nature * price
+#         if open_position and ~position:
+#             profits.append(profit)
+#             profit = 0
+#         open_position = position
+#     return net_profit, profits
 
 def draw_downs(profits):
     dd = 0
