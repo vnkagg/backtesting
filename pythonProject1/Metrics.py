@@ -23,21 +23,20 @@ class metrics:
 
     def PNL(self):
         df_trades = self.df_trades
-        profit, net_profit, expenses = 0, 0, 0
+        profit, net_profit = 0, 0
         profits = []
         open_position = False
         for i, trade in df_trades.iterrows():
             price = trade['Price']
             position = trade['Position']
             cash_flow_nature = 1
-            if position:  # long -> pos = 1, short -> pos = 0
+            if position == 1:  # long -> pos = 1, short -> pos = 0
                 cash_flow_nature = -1
-            net_profit += cash_flow_nature * price
-            profit += cash_flow_nature * price
-            expenses += self.get_expense_cost(price)
+            net_profit += cash_flow_nature * price - self.get_expense_cost(price)
+            profit += cash_flow_nature * price - self.get_expense_cost(price)
             if open_position and not position:
-                profits.append(profit - expenses)
-                profit, expenses = 0, 0
+                profits.append(profit)
+                profit = 0
             open_position = position
         return net_profit, profits
 
@@ -79,20 +78,34 @@ class metrics:
         df_call_put_open = self.df_call_put_open
         trades_timestamps = df_trades.index.normalize().unique()
         pnl_per_day = []
-        carry_over = False
+        carry_over, carry_open_position = False, []
         expense = 0
         for date in trades_timestamps:
             pnl_this_day = 0
             df_trades_this_day = df_trades[df_trades.index.normalize() == date]
+            if df_trades_this_day.empty and not carry_over:
+                continue
+            if df_trades_this_day.empty and carry_over:
+                open_time = pd.Timestamp.combine(date, time(9, 15))
+                close_time = pd.Timestamp.combine(date, time(15, 29))
+                carry_opt_type = carry_open_position[1]
+                carry_opt_strike = carry_open_position[2]
+                pnl_this_day += df_call_put_open[carry_opt_type][carry_opt_strike].loc[close_time] - \
+                                df_call_put_open[carry_opt_type][carry_opt_strike].loc[open_time]
+                pnl_this_day -= self.get_expense_cost(
+                    df_call_put_open[carry_opt_type][carry_opt_strike].loc[close_time])
+                pnl_per_day.append((date, pnl_this_day))
+                continue
             if carry_over:
                 call_put = df_trades_this_day["Call/Put"].iloc[0]
                 strike = df_trades_this_day["strike_price"].iloc[0]
-                pnl_this_day = df_trades_this_day["Price"].iloc[0] - df_call_put_open[call_put][strike].loc[
-                    pd.Timestamp.combine(date, time(9, 15))]
+                carry_pivot_price = carry_open_position[0]
+                pnl_this_day = df_trades_this_day["Price"].iloc[0] - carry_pivot_price
+                pnl_this_day -= self.get_expense_cost(df_trades_this_day["Price"].iloc[0])
                 df_trades_this_day = df_trades_this_day.iloc[1:]
-                carry_over = False
+                carry_over, carry_open_position = False, []
             df_prices = df_trades_this_day['Price']
-            df_cashflow_nature = 1 * df_trades_this_day['Position'] + (-1) * (1 - df_trades_this_day['Position'])
+            df_cashflow_nature = (-1) * df_trades_this_day['Position'] + (1) * (1 - df_trades_this_day['Position'])
             df_profits = df_prices * df_cashflow_nature
             df_expenses = self.get_expense_cost(df_prices)
             pnl_this_day += df_profits.sum() - df_expenses.sum()
@@ -100,8 +113,9 @@ class metrics:
                 call_put = df_trades_this_day['Call/Put'].iloc[-1]
                 strike = df_trades_this_day['strike_price'].iloc[-1]
                 date_timestamp = pd.Timestamp.combine(date, time(15, 29))
-                pnl_this_day -= df_call_put_close[call_put][strike].loc[date_timestamp]
-                carry_over = True
+                carry_pivot_price = df_call_put_close[call_put][strike].loc[date_timestamp]
+                carry_over, carry_open_position = True, [carry_pivot_price, call_put, strike]
+                pnl_this_day += carry_pivot_price
             pnl_per_day.append((date, pnl_this_day))
         pnl_per_day = pd.DataFrame(pnl_per_day, columns=['date', 'pnl'])
         pnl_per_day.set_index('date', inplace=True)

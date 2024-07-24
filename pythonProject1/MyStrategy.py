@@ -13,7 +13,7 @@ from Metrics import get_metrics_object
 from Visualisations import plot_all_traded_options, plot_futures_and_ema, filter_ticks, plot_PNL
 from matplotlib import pyplot as plt
 from Data_Processing import get_portion_data_with_overlapping_timelines, clean_and_normalize_futures_data, clean_and_normalize_options_data
-
+import re
 host = "192.168.2.23"
 port = 5432
 user = "amt"
@@ -44,9 +44,9 @@ transaction_costs = float(input(">> Enter transaction costs in basis points (1% 
 slippage = float(input(">> Enter slippage in basis points (1% = basis points): "))
 expiry_input_format = input("Do you know a valid expiry that exists in the database? (YES/NO): ")
 if expiry_input_format == "YES" or expiry_input_format == "yes":
-    date = int(input(">> Expiration Date: "))
-    month = int(input(">> Expiration Month: "))
-    year = int(input(">> Expiration Year: "))
+    date = int(input(">> Expiration Date (DD): "))
+    month = int(input(">> Expiration Month (MM): "))
+    year = int(input(">> Expiration Year (YYYY): "))
     DF_FUTURES, DF_OPTIONS = fetch_with_expiry(host, port, user, dbname, symbol, date, month, year)
 else:
     x = int(input(">> Enter an index of the array of all the expiries available on I type of futures and options you wanna analyse: "))
@@ -54,12 +54,13 @@ else:
 
 df_futures = DF_FUTURES.copy()
 df_options = DF_OPTIONS.copy()
+ParamExpiry_futures = df_futures['expiry'].iloc[0]
+ParamExpiry_options = df_options['expiry'].iloc[0]
+params_string_for_user = f"symbol_{symbol}__fund_locked_{fund_locked}__EMA_short_{window_short}_long_{window_long}__moneyness_strike_ATM+{moneyness_strike}__expiry_futures_{ParamExpiry_futures}__expiry_options_{ParamExpiry_options}"
+params_string_for_user = re.sub(r'[: ]', '-', params_string_for_user)
 # ========================+++++++++++++++++++++++++============== USER INPUT ==============++++++++++++++++================================#
 # ========================+++++++++++++++++++++++++============== USER INPUT ==============++++++++++++++++================================#
 # ========================+++++++++++++++++++++++++============== USER INPUT ==============++++++++++++++++================================#
-
-
-
 
 
 
@@ -71,8 +72,8 @@ print("shape of the futures dataframe fetched:", df_futures.shape)
 print("columns of the futures dataframe fetched:", df_futures.columns)
 # futures_description = df_futures.describe()
 # print("futures Dataframe statistics:", x)
+df_futures.to_excel(f"RAW_FUTURES_DATA_SAVED_FROM_PROGRAM_{params_string_for_user}.xlsx", engine='openpyxl')
 print("saved the raw fetched futures data to excel sheet")
-df_futures.to_csv(f"Saved_from_program_RAW_FUTURES_DATA_{symbol}")
 print('\n\n\n')
 
 
@@ -84,8 +85,8 @@ print("shape of the options dataframe fetched:", df_options.shape)
 print("columns of the options dataframe fetched:", df_options.columns)
 # options_description = df_options.describe()
 # print("options Dataframe statistics:", options_description)
+df_options.to_excel(f"RAW_OPTIONS_DATA_SAVED_FROM_PROGRAM_{params_string_for_user}.xlsx", engine='openpyxl')
 print("saved the raw fetched options data to excel sheet")
-df_options.to_csv(f"Saved_from_program_RAW_OPTIONS_DATA_{symbol}")
 print('\n\n\n')
 
 
@@ -93,8 +94,8 @@ print('\n\n\n')
 
 
 # =============================================================== DATA PREPOCESSING ================================================================= #
-df_futures = clean_and_normalize_futures_data(df_futures)
-df_options, df_calls_puts_close, df_calls_puts_open, strikes_calls_puts, timestamps = clean_and_normalize_options_data(df_options)
+df_futures, timestamps = clean_and_normalize_futures_data(df_futures)
+df_options, df_calls_puts_close, df_calls_puts_open, strikes_calls_puts = clean_and_normalize_options_data(df_options)
 df_options, df_futures, start_intersection, end_intersection = get_portion_data_with_overlapping_timelines(df_options, df_futures)
 
 print("start_intersection:", start_intersection)
@@ -110,25 +111,28 @@ print("=======================SIGNALS====================SIGNALS================
 signals, df_signals = EMA(window_short, window_long, df_futures)
 print("number of signals:", len(signals))
 print_signals(signals)
-df_signals.to_csv(f"signals_generated_from_EMA_{symbol}")
+df_signals.to_excel(f"SIGNALS_GENERATED_FROM_EMA_{params_string_for_user}.xlsx", engine='openpyxl')
 print("signals saved to excel sheet")
+
 print("=======================SIGNALS====================SIGNALS======================== SIGNALS =======================SIGNALS=========================SIGNALS===============")
 
 print()
 print()
 print("======================== TRADES ==================== TRADES ======================== TRADES ========================== TRADES ============================= TRADES =================")
 trades, df_trades = make_trades(signals, moneyness_strike, end_intersection, df_futures, df_calls_puts_open, fund_locked, strikes_calls_puts)
+metrics = get_metrics_object(df_trades, df_calls_puts_open, df_calls_puts_close, fund_locked, risk_free_rate, transaction_costs, slippage)
+
 
 print("number of trades:", len(trades))
 print("trades")
-print_trades(df_trades, timestamps, df_calls_puts_open)
+print_trades(df_trades, timestamps, df_calls_puts_open, metrics)
+df_trades.to_excel(f"TRADES_EXECUTED_FROM_SIGNALS_{params_string_for_user}.xlsx", engine='openpyxl')
 print("trades saved to excel sheet")
-df_trades.to_csv(f"trades_executed_from_signals_fundlocked_{fund_locked}_{symbol}")
+
 print("======================== TRADES ==================== TRADES ======================== TRADES ========================== TRADES ============================= TRADES =================")
 
 
 
-metrics = get_metrics_object(df_trades, df_calls_puts_open, df_calls_puts_close, fund_locked, risk_free_rate, transaction_costs, slippage)
 
 print()
 print()
@@ -140,7 +144,7 @@ net_expenditure = metrics.net_expenditure()
 net_return = metrics.net_return()
 max_drawdown = metrics.max_drawdown()
 per_day_pnl = metrics.per_day_pnl()
-per_day_pnl.to_csv(f"per_day_pnl_{symbol}")
+per_day_pnl.to_excel(f"PER_DAY_PNL_{params_string_for_user}.xlsx", engine='openpyxl')
 print("saved per day pnl to excel sheet")
 
 print("stock/index:", symbol)

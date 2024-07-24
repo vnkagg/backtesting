@@ -81,7 +81,7 @@ def clean_and_normalize_options_data(df_options):
     strikes_calls = np.array(df_calls_close.columns, dtype=int)
     strikes_puts = np.array(df_puts_close.columns, dtype=int)
 
-    return df_options, [df_puts_close, df_calls_close], [df_puts_open, df_calls_open], [strikes_puts, strikes_calls], timestamps
+    return df_options, [df_puts_close, df_calls_close], [df_puts_open, df_calls_open], [strikes_puts, strikes_calls]
 
 def clean_and_normalize_futures_data(df_futures):
     df_futures = df_futures.copy()
@@ -93,5 +93,7 @@ def clean_and_normalize_futures_data(df_futures):
     complete_index = get_continuous_date_timeframe(start_futures, expiry_futures)
 
     df_futures = df_futures.reindex(complete_index).ffill()
+    timestamps = df_futures.index.unique()
+    timestamps = pd.Series(timestamps)
 
-    return df_futures
+    return df_futures, timestamps
