@@ -2,6 +2,7 @@ from Modules.enums import Option, LongShort, Leg, FNO, Period
 from Modules import TradeAndLogics as TL
 import pandas as pd
 import numpy as np
+import os
 
 
 def get_leg_future(ticker, timestamp, lots, position, asArray=False):
@@ -807,24 +808,100 @@ def get_sqrtp_for_theta_neutral(timestamp, ticker):
 
 
 class Metrics:
-    def __init__(self, input, fund_blocked, risk_free_rate):
-        if isinstance(input, pd.Series) or isinstance(input, pd.DataFrame):
-            self._daily_profit(input)
-        elif isinstance(input, str):
-            self._summary_pnl_path(input)
-        else:
-            print(f"Either Provide Daily Profit Pandas Series DateTimeIndexed using the ._daily_profit() method")
-            print(f"or Provide Path to the Summary PNL CSV using the ._summary_pnl_path() containing the Running PNL (without expenses), Cumulative Expenses, Running PNL columns")
-        self.fund_blocked = fund_blocked
-        self.risk_free_rate = risk_free_rate
+    def __init__(self, risk_free_rate=0.12):
+        self.risk_free_rate=risk_free_rate
+        self.pwd = None
+        self.flag_problem = False
+        return
+    
+    def output_series(self, series, period=Period.Annual):
+        if period == Period.Annual:
+            series.index = series.index.strftime('%Y')
+        if period == Period.Monthly:
+            series.index = series.index.strftime('%Y %B')
+        return series
+
+    def scale_period(self, period):
+        if period == Period.Annual or period == Period.Complete:
+            return np.sqrt(252)
+        if period == Period.Monthly:
+            return np.sqrt(21)
+        return 1
 
     def _daily_profit(self, daily_profit):
         self.daily_profit = daily_profit
-    
+
     def _summary_pnl_path(self, path):
-        from Modules.Data_Processing import get_continuous_excluding_market_holidays
         self.summary_pnl_path = path
         self.summary_pnl = pd.read_csv(self.summary_pnl_path, index_col=0, parse_dates=True)
+        self._initialize_daily_profit_from_summary_pnl()
+        
+    # def __init__(self, input, fund_blocked, risk_free_rate):
+    #     if isinstance(input, pd.Series) or isinstance(input, pd.DataFrame):
+    #         self._daily_profit(input)
+    #     elif isinstance(input, str):
+    #         self._summary_pnl_path(input)
+    #     else:
+    #         print(f"Either Provide Daily Profit Pandas Series DateTimeIndexed using the ._daily_profit() method")
+    #         print(f"or Provide Path to the Summary PNL CSV using the ._summary_pnl_path() containing the Running PNL (without expenses), Cumulative Expenses, Running PNL columns")
+    #     self.fund_blocked = fund_blocked
+    #     self.risk_free_rate = risk_free_rate
+
+    def consolidate_margin_summary_pnl_file(self, pwd):
+        self.pwd = pwd
+        from Modules import Plot
+        summary_pnl_path = os.path.join(pwd, 'summary_pnl.csv')
+        trades_margin_path = os.path.join(pwd, 'trades_margin.csv')
+        all_trades_pnl_data = []
+        all_trades_margin_data = []
+        start_date_folder_name_mapping = {}
+        for trade_folder in os.listdir(pwd):
+            trade_folder_path = os.path.join(pwd, trade_folder)
+            if not os.path.isdir(trade_folder_path):
+                continue
+            trade_pnl_file_path = os.path.join(trade_folder_path, 'PNL.csv')
+            trade_margin_file_path = os.path.join(trade_folder_path, 'margin.csv')
+            if os.path.exists(trade_pnl_file_path):
+                trade_pnl_data = pd.read_csv(trade_pnl_file_path, parse_dates=True, index_col=0)
+                all_trades_pnl_data.append(trade_pnl_data)
+                key = str(trade_pnl_data.index[0].date())
+                if key not in start_date_folder_name_mapping:
+                    start_date_folder_name_mapping[key] = []
+                start_date_folder_name_mapping[key].append(trade_folder)
+            if os.path.exists(trade_margin_file_path):
+                trade_margin_data = pd.read_csv(trade_margin_file_path)
+                all_trades_margin_data.append(trade_margin_data)
+        if all_trades_pnl_data:
+            summary_pnl = pd.concat(all_trades_pnl_data)
+            # Plot.save_df_to_excel(summary_pnl, summary_pnl_path)
+            summary_pnl.to_csv(summary_pnl_path)
+            self.summary_pnl = summary_pnl
+        if all_trades_margin_data:
+            summary_margin = pd.concat(all_trades_margin_data)
+            Plot.save_df_to_excel({'Trades Summary':summary_margin}, trades_margin_path)
+            # summary_margin.to_csv(trades_margin_path)
+            self.summary_margin = summary_margin
+            self.fund_blocked = summary_margin.copy()
+            self.fund_blocked['Start'] = pd.to_datetime(self.fund_blocked['Start'])
+            self.fund_blocked = self.fund_blocked.set_index('Start')
+            self.fund_blocked = self.fund_blocked['Margin']
+        self._initialize_daily_profit_from_summary_pnl()
+        return start_date_folder_name_mapping
+    
+    def get_fund_blocked(self, period, format=False):
+        if period==Period.Complete:
+            return self.fund_blocked.max()
+        fund_blocked = self.fund_blocked.resample(period.value).max()
+        if format:
+            return self.output_series(fund_blocked, period)
+        return fund_blocked
+    
+    def _initialize_daily_profit_from_summary_pnl(self):
+        from Modules.Data_Processing import get_continuous_excluding_market_holidays
+        if not hasattr(self, 'summary_pnl'):
+            self.flag_problem = True
+            print(f"There is no Summary PNL for {self.pwd}")
+            return
         self.summary_pnl = self.normalize(self.summary_pnl)
         _, ci = get_continuous_excluding_market_holidays(self.summary_pnl)
         self.summary_pnl = self.summary_pnl.reindex(ci)
@@ -839,8 +916,12 @@ class Metrics:
         self.daily_profit.index = pd.to_datetime(self.daily_profit.index)
         self.daily_profit.name = 'Daily PNL including Expenses'
 
+
     def normalize(self, df):
+        if self.flag_problem:
+            return
         df = df.copy()
+        pd.set_option('future.no_silent_downcasting', True)
         df = df[['Running PNL (without expenses)', 'Cumulative Expenses']]
         df = df.reset_index()
         ix_zeroes = df.index[df['Running PNL (without expenses)'] == 0]
@@ -852,9 +933,9 @@ class Metrics:
         df.loc[ix_zeroes, 'last_vals_pnl'] = df.loc[ix_last_vals, 'Running PNL (without expenses)'].values
         df.loc[ix_zeroes, 'last_vals_expenses'] = df.loc[ix_last_vals, 'Cumulative Expenses'].values
         df.loc[0, ['last_vals_pnl', 'last_vals_expenses']] = 0
-        df['last_vals_pnl'] = df['last_vals_pnl'].fillna(0)
+        df['last_vals_pnl'] = df['last_vals_pnl'].fillna(0).infer_objects(copy=False)
         df['last_vals_pnl'] = df['last_vals_pnl'].cumsum()
-        df['last_vals_expenses'] = df['last_vals_expenses'].fillna(0)
+        df['last_vals_expenses'] = df['last_vals_expenses'].fillna(0).infer_objects(copy=False)
         df['last_vals_expenses'] = df['last_vals_expenses'].cumsum()
         df = df.groupby(df['index']).agg({
             'Running PNL (without expenses)': 'sum',
@@ -868,19 +949,7 @@ class Metrics:
         df['Running PNL'] = df['Running PNL (without expenses)'] - df['Cumulative Expenses']
         return df
     
-    def output_series(self, series, period=Period.Annual):
-        if period == Period.Annual:
-            series.index = series.index.strftime('%Y')
-        if period == Period.Monthly:
-            series.index = series.index.strftime('%B %Y')
-        return series
-
-    def scale_period(self, period):
-        if period == Period.Annual:
-            return np.sqrt(252)
-        if period == Period.Monthly:
-            return np.sqrt(21)
-        return 1
+    
     
     # def focus_time_interval(self, from_date, till_date):
     #     self.backup_daily_profit = self.daily_profit
@@ -889,66 +958,74 @@ class Metrics:
     # def reset_time_interval(self):
     #     self.daily_profit = self.backup_daily_profit
 
-    def returns(self, period=Period.Annual, all_data=False):
-        period_profits = self.daily_profit.resample(period.value)
-        if all_data:
+    def returns(self, period=Period.Annual):
+        if self.flag_problem:
+            return
+        if period==Period.Complete:
             period_profits = self.daily_profit
-        period_returns = period_profits.sum()/ self.fund_blocked * 100
+        else:
+            period_profits = self.daily_profit.resample(period.value)
+        period_returns = period_profits.sum()/ self.get_fund_blocked(period) * 100
         period_returns = np.round(period_returns, 2)
-        if all_data:
+        if period==Period.Complete:
             return period_returns
         period_returns.name = f"{period.name} Returns (%)"
         return self.output_series(period_returns, period)
         
-    def sharpe(self, period=Period.Annual, all_data=False):
-        if all_data:
+    def sharpe(self, period=Period.Annual):
+        if self.flag_problem:
+            return
+        if period==Period.Complete:
             period_profits = self.daily_profit
         else:
             period_profits = self.daily_profit.resample(period.value)
-        sharpe = (period_profits.mean() - self.risk_free_rate * self.fund_blocked/365)/period_profits.std()
+        sharpe = (period_profits.mean() - self.risk_free_rate * self.get_fund_blocked(period)/365)/period_profits.std()
         sharpe *= self.scale_period(period)
         sharpe = np.round(sharpe, 2)
-        if all_data:
+        if period==Period.Complete:
             return sharpe
         sharpe.name = f"{period.name} Sharpe"
         return self.output_series(sharpe, period)
 
-    def sortino(self, period=Period.Annual, all_data=False):
-        if all_data:
+    def sortino(self, period=Period.Annual):
+        if self.flag_problem:
+            return
+        if period==Period.Complete:
             period_profits = self.daily_profit
             negative_performance = period_profits[period_profits < 0]
         else:
             period_profits = self.daily_profit.resample(period.value)
             negative_performance = period_profits.apply(lambda group: group[group < 0])
             negative_performance = negative_performance.resample(period.value)
-        sortino = (period_profits.mean() - self.risk_free_rate * self.fund_blocked/365)/negative_performance.std()
+        sortino = (period_profits.mean() - self.risk_free_rate * self.get_fund_blocked(period)/365)/negative_performance.std()
         sortino *= self.scale_period(period)
         sortino = np.round(sortino, 2)
-        if all_data:
+        if period==Period.Complete:
             return sortino
         sortino.name = f"{period.name} Sortino"
         return self.output_series(sortino, period)
 
-    def information_ratio(self, period=Period.Annual, all_data=False):
-        if all_data:
+    def information_ratio(self, period=Period.Annual):
+        if self.flag_problem:
+            return
+        if period==Period.Complete:
             period_profits = self.daily_profit
             points_with_trades = period_profits[period_profits != 0]
         else:
             period_profits = self.daily_profit.resample(period.value)
             points_with_trades = period_profits.apply(lambda group: group[group != 0])
             points_with_trades = points_with_trades.resample(period.value)
-        ir = (period_profits.mean() - self.risk_free_rate * self.fund_blocked/365)/points_with_trades.std()
+        ir = (period_profits.mean() - self.risk_free_rate * self.get_fund_blocked(period)/365)/points_with_trades.std()
         ir *= self.scale_period(period)
         ir = np.round(ir, 2)
-        if all_data:
+        if period==Period.Complete:
             return ir
         ir.name = f"{period.name} Information Ratio"
         return self.output_series(ir, period)
 
     def drawdown_intervals(self, period=Period.Annual):
-        period_profits = self.daily_profit.resample(period.value)
-        cum_period_profits = period_profits.apply(lambda group: group.cumsum())
-        cum_period_profits = cum_period_profits.resample(period.value)
+        if self.flag_problem:
+            return
         def helper(group):
             peaks = group.cummax()
             drawdowns = (group - peaks)/peaks * 100
@@ -957,21 +1034,36 @@ class Metrics:
             peak_value = peaks[till_date]
             peaks_all = peaks[peaks == peak_value]
             peak_date = peaks_all.index[0]
-            interval = (peak_date, till_date)
+            interval = f'{peak_date.strftime('%d/%b/%y')} - {till_date.strftime('%d/%b/%y')}'
             return interval
+        if period==Period.Complete:
+            period_profits = self.daily_profit
+            return helper(period_profits)
+        else:
+            period_profits = self.daily_profit.resample(period.value)
+        cum_period_profits = period_profits.apply(lambda group: group.cumsum())
+        cum_period_profits = cum_period_profits.resample(period.value)
         intervals = cum_period_profits.apply(helper)
         intervals.name = f"{period.name} Time Interval"
         return self.output_series(intervals, period)
 
     def max_drawdowns(self, period=Period.Annual):
-        period_profits = self.daily_profit.resample(period.value)
-        cum_period_profits = period_profits.apply(lambda group: group.cumsum())
-        cum_period_profits = cum_period_profits.resample(period.value)
+        if self.flag_problem:
+            return
         def helper(group):
             peaks = group.cummax()
             drawdowns = (group - peaks)/peaks * 100
             drawdowns.fillna(0)
             return drawdowns
+        if period==Period.Complete:
+            period_profits = self.daily_profit
+            drawdowns = helper(period_profits)
+            max_drawdown = drawdowns.min()
+            return np.round(max_drawdown, 2)
+        
+        period_profits = self.daily_profit.resample(period.value)
+        cum_period_profits = period_profits.apply(lambda group: group.cumsum())
+        cum_period_profits = cum_period_profits.resample(period.value)
         drawdowns = cum_period_profits.apply(helper)
         drawdowns = drawdowns.resample(period.value)
         max_drawdown = drawdowns.min()
@@ -980,14 +1072,25 @@ class Metrics:
         return self.output_series(max_drawdown, period)
         
     def profits(self, period=Period.Annual):
-        profits_series = self.daily_profit.resample(period.value).sum()
-        profits_series = np.round(profits_series, 2)
-        profits_series.name = f"{period.name} Profits"
-        return self.output_series(profits_series, period)
+        if self.flag_problem:
+            return
+        if period==Period.Complete:
+            period_profits = self.daily_profit
+            period_profits = np.round(period_profits, 2)
+        else:
+            period_profits = self.daily_profit.resample(period.value)
+            period_profits = period_profits.apply(lambda group: np.round(group, 2))
+            period_profits = period_profits.resample(period.value)
+        period_profits = period_profits.sum()
+        if isinstance(period_profits, pd.Series):
+            period_profits.name = f"{period.name} Profits"
+        return self.output_series(period_profits, period)
 
-    def cum_profit(self, period=Period.Annual, all_data=False):
+    def cum_profit(self, period=Period.Annual):
+        if self.flag_problem:
+            return
         from Modules import Plot
-        if all_data:
+        if period==Period.Complete:
             period_profits = self.daily_profit
             cum_profits = period_profits.cumsum()
             df_cum_profits = cum_profits.to_frame()
@@ -1004,22 +1107,32 @@ class Metrics:
         graph_series = pd.Series(graph_series)
         return (self.output_series(data_series, period), self.output_series(graph_series, period))
     
-    def risk_free_profit(self):
-        rfp = len(self.daily_profit) * self.fund_blocked * self.risk_free_rate / 365
-        rfp = np.round(rfp, 2)
-        return rfp
+    # def risk_free_profit(self):
+    #     if self.flag_problem:
+    #         return
+    #     rfp = len(self.daily_profit) * self.get_fund_blocked(period) * self.risk_free_rate / 365
+    #     rfp = np.round(rfp, 2)
+    #     return rfp
     
     def win_percentage(self, period=Period.Annual):
-        period_profits = self.daily_profit.resample(period.value)
-        win_periods = period_profits.apply(lambda group: group[group > 0])
-        win_periods = win_periods.resample(period.value)
+        if self.flag_problem:
+            return
+        if period==Period.Complete:
+            period_profits = self.daily_profit
+            win_periods = period_profits[period_profits > 0]
+            lose_periods = period_profits[period_profits < 0]
+        else:
+            period_profits = self.daily_profit.resample(period.value)
+            win_periods = period_profits.apply(lambda group: group[group > 0])
+            win_periods = win_periods.resample(period.value)
+            lose_periods = period_profits.apply(lambda group: group[group < 0])
+            lose_periods = lose_periods.resample(period.value)
         win_periods = win_periods.count()
-        lose_periods = period_profits.apply(lambda group: group[group < 0])
-        lose_periods = lose_periods.resample(period.value)
         lose_periods = lose_periods.count()
-        total_periods = win_periods + lose_periods
-        win_percentage = win_periods/ total_periods if total_periods > 0 else 0
-        win_percentage = np.round(win_percentage * 100, 2)
-        win_percentage.name = f"{period.name} Win Ratio (%)"
-        return win_percentage
+        win_ratio = win_periods/ lose_periods
+        win_ratio = np.round(win_ratio, 2)
+        if isinstance(win_ratio, pd.Series):
+            win_ratio.name = f"{period.name} Win Ratio (%)"
+            return self.output_series(win_ratio, period)
+        return win_ratio
 
